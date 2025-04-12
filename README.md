@@ -28,6 +28,12 @@ Feel free to use, modify, and distribute this code as you see fit. I'll not be h
 
 ```bash
 pip install -r requirements.txt
+
+
+or
+
+```bash
+pip3 install -r requirements.txt
 ```
 
 ## Usage
@@ -36,6 +42,12 @@ Run the main application:
 
 ```bash
 python main.py
+```
+
+or
+
+```bash
+python3 main.py
 ```
 
 ### Controls

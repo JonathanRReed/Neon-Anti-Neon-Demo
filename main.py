@@ -3,10 +3,9 @@ Neon & Anti-Neon Demo
 Main application that integrates all components
 """
 
-import time
 import numpy as np
 import dearpygui.dearpygui as dpg
-import math
+import time
 
 from color_engine import ColorEngine
 
@@ -350,9 +349,8 @@ class NeonApp:
     
     def run(self):
         """Run the application"""
-        print("Starting Neon & Anti-Neon Demo...")
-        print("Use the sliders to adjust colors and parameters.")
-        print("Toggle between Neon and Anti-Neon modes using the radio buttons.")
+        print("Use the sliders to adjust colors & parameters.")
+        print("Toggle between Neon & Anti-Neon modes.")
         print("Press ESC or close the window to exit.")
         
         # Show viewport
