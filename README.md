@@ -3,13 +3,13 @@
 Inspired by the Vsauce short on neon/brown color perception.
 [Vsauce Neon/Brown](https://www.youtube.com/shorts/vnpOGuvZsX0)
 
-An interactive real‑time simulation of neon colors and their “anti‑neon” counterparts, featuring a liquid‑glass UI, GPU shaders (with automatic CPU fallback), dual‑color core/halo neon rendering, smooth animations, and one‑click presets (including “Neon Brown”).
+An interactive real‑time simulation of neon colors and their “anti‑neon” counterparts, featuring UI, GPU shaders (with automatic CPU fallback), dual‑color core/halo neon rendering, smooth animations, and one‑click presets (including “Neon Brown”).
 
 Feel free to use, modify, and distribute this code as you see fit. I will not be held responsible for any issues that may arise from using this code or continue to maintain it.
 
 ## Features
 
-- Interactive liquid‑glass UI using Dear PyGui
+- Interactive UI using Dear PyGui
 - Real‑time sliders: Hue, Saturation, Brightness, Fluorescence
 - Neon and Anti‑Neon modes
 - Dual‑color neon shader (core + halo) with Halo Width and Halo Intensity controls
