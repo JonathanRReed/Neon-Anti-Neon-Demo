@@ -5,6 +5,7 @@ Implements the Dark-Mode UI with Dear PyGui
 
 import dearpygui.dearpygui as dpg
 import numpy as np
+import math
 
 
 class UI:

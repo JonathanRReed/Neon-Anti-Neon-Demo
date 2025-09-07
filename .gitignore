@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+.env
+.env.*
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.eggs/
+*.whl
+
+# Test / coverage / type-check
+.pytest_cache/
+.coverage*
+htmlcov/
+.mypy_cache/
+.pyre/
+.pytype/
+
+# Logs
+logs/
+*.log
+
+# OS / Editor junk
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.code-workspace
+
+# Project-specific
+exports/*.npy
+# keep exported images; ignore raw arrays. uncomment to ignore PNGs too:
+# exports/*.png
+
+# Cache / temp
+**/.cache/
+*.tmp
+*.temp
+~$*

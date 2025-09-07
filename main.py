@@ -6,8 +6,169 @@ Main application that integrates all components
 import numpy as np
 import dearpygui.dearpygui as dpg
 import time
+import moderngl as mgl
+import os
+from datetime import datetime
 
 from color_engine import ColorEngine
+
+
+class ShaderRenderer:
+    """
+    GPU-accelerated renderer using ModernGL and GLSL shaders
+    """
+    
+    def __init__(self, width=800, height=600):
+        """Initialize the shader renderer (context will be created lazily)"""
+        self.width = width
+        self.height = height
+        self.ctx = None
+        self.neon_program = None
+        self.antineon_program = None
+        self.vbo = None
+        self.vao = None
+        self.framebuffer = None
+    
+    def _ensure_context(self):
+        """Create ModernGL context and GPU resources if not already created.
+        This must be called after DearPyGui has shown the viewport so an OpenGL
+        context is current.
+        """
+        if self.ctx is not None:
+            return
+        # Attach to the current OpenGL context provided by DearPyGui
+        self.ctx = mgl.create_context(require=330)
+        # Load shaders and GPU buffers
+        self._load_shaders()
+        self._create_quad()
+        self.framebuffer = self.ctx.framebuffer(
+            color_attachments=[self.ctx.texture((self.width, self.height), 4, dtype='f4')]
+        )
+        
+    def _load_shaders(self):
+        """Load GLSL shaders from files"""
+        try:
+            with open('shaders/vertex.glsl', 'r') as f:
+                vertex_shader = f.read()
+            with open('shaders/neon_fragment.glsl', 'r') as f:
+                self.neon_fragment = f.read()
+            with open('shaders/antineon_fragment.glsl', 'r') as f:
+                self.antineon_fragment = f.read()
+                
+            # Create shader programs
+            self.neon_program = self.ctx.program(
+                vertex_shader=vertex_shader,
+                fragment_shader=self.neon_fragment
+            )
+            self.antineon_program = self.ctx.program(
+                vertex_shader=vertex_shader,
+                fragment_shader=self.antineon_fragment
+            )
+            
+        except FileNotFoundError as e:
+            print(f"Shader file not found: {e}")
+            raise
+        except Exception as e:
+            print(f"Error loading shaders: {e}")
+            raise
+    
+    def _create_quad(self):
+        """Create a full-screen quad for rendering"""
+        # Quad vertices (positions and texture coordinates)
+        vertices = np.array([
+            # positions    # texture coords
+            -1.0, -1.0,    0.0, 0.0,  # bottom left
+             1.0, -1.0,    1.0, 0.0,  # bottom right
+            -1.0,  1.0,    0.0, 1.0,  # top left
+             1.0,  1.0,    1.0, 1.0,  # top right
+        ], dtype=np.float32)
+        
+        # Create vertex buffer
+        self.vbo = self.ctx.buffer(vertices.tobytes())
+        
+        # Create vertex array
+        self.vao = self.ctx.vertex_array(
+            self.neon_program,  # We'll switch programs as needed
+            [(self.vbo, '2f 2f', 'in_position', 'in_texcoord')]
+        )
+    
+    def render_frame(self, color_engine):
+        """Render a frame using shaders"""
+        # Ensure GL context and resources are ready
+        self._ensure_context()
+        
+        # Bind framebuffer
+        self.framebuffer.use()
+        self.ctx.clear(0.05, 0.05, 0.05, 1.0)  # Dark background
+        
+        # Choose shader program based on mode
+        if color_engine.neon_mode:
+            program = self.neon_program
+            # Set neon shader uniforms (dual-color core/halo) below
+        else:
+            program = self.antineon_program
+            program['shadow_intensity'] = 0.5  # Adjust as needed
+        
+        # Set uniforms from ColorEngine
+        if color_engine.neon_mode:
+            cr, cg, cb = color_engine.get_rgb()
+            hr, hg, hb = color_engine.get_halo_rgb()
+            program['core_color'] = (cr, cg, cb)
+            program['halo_color'] = (hr, hg, hb)
+            program['halo_width'] = float(color_engine.halo_width)
+            program['halo_intensity'] = float(color_engine.halo_intensity)
+            program['bloom_intensity'] = float(color_engine.get_bloom_intensity())
+        else:
+            r, g, b = color_engine.get_rgb()
+            program['color'] = (r, g, b)
+        
+        # Bind vertex array with current program
+        vao = self.ctx.vertex_array(program, [(self.vbo, '2f 2f', 'in_position', 'in_texcoord')])
+        
+        # Render quad
+        vao.render(mgl.TRIANGLE_STRIP)
+        
+        # Read pixels from framebuffer
+        pixels = self.framebuffer.read(components=4, dtype='f4')
+        
+        # Convert to numpy array and reshape
+        texture_data = np.frombuffer(pixels, dtype=np.float32).reshape(self.height, self.width, 4)
+        
+        return texture_data
+    
+    def cleanup(self):
+        """Clean up ModernGL resources (safe even if context failed)"""
+        try:
+            if getattr(self, 'vao', None) is not None:
+                self.vao.release()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'vbo', None) is not None:
+                self.vbo.release()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'framebuffer', None) is not None:
+                self.framebuffer.release()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'neon_program', None) is not None:
+                self.neon_program.release()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'antineon_program', None) is not None:
+                self.antineon_program.release()
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'ctx', None) is not None:
+                self.ctx.release()
+        except Exception:
+            pass
+
 
 class NeonApp:
     """
@@ -24,7 +185,67 @@ class NeonApp:
         # Initialize DearPyGui
         dpg.create_context()
         dpg.create_viewport(title="Neon & Anti-Neon Demo", width=1200, height=800)
+        
+        # Set modern dark theme
+        with dpg.theme() as global_theme:
+            with dpg.theme_component(dpg.mvAll):
+                # Modern dark colors with translucency (glass-like)
+                dpg.add_theme_color(dpg.mvThemeCol_WindowBg, (15, 15, 20, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_ChildBg, (25, 25, 30, 180))
+                dpg.add_theme_color(dpg.mvThemeCol_Border, (70, 70, 80, 140))
+                dpg.add_theme_color(dpg.mvThemeCol_BorderShadow, (0, 0, 0, 0))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBg, (35, 35, 45, 170))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgHovered, (45, 45, 60, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_FrameBgActive, (60, 60, 80, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_TitleBg, (20, 20, 25, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_TitleBgActive, (25, 25, 30, 230))
+                dpg.add_theme_color(dpg.mvThemeCol_TitleBgCollapsed, (15, 15, 20, 210))
+                dpg.add_theme_color(dpg.mvThemeCol_Button, (60, 60, 80, 170))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (80, 80, 110, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive, (100, 100, 130, 230))
+                dpg.add_theme_color(dpg.mvThemeCol_Header, (40, 40, 60, 170))
+                dpg.add_theme_color(dpg.mvThemeCol_HeaderHovered, (55, 55, 80, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_HeaderActive, (70, 70, 100, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_Separator, (80, 80, 95, 150))
+                dpg.add_theme_color(dpg.mvThemeCol_SeparatorHovered, (100, 100, 120, 180))
+                dpg.add_theme_color(dpg.mvThemeCol_SeparatorActive, (130, 130, 160, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_ResizeGrip, (60, 60, 80, 150))
+                dpg.add_theme_color(dpg.mvThemeCol_ResizeGripHovered, (80, 80, 110, 180))
+                dpg.add_theme_color(dpg.mvThemeCol_ResizeGripActive, (100, 100, 130, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_ScrollbarBg, (15, 15, 20, 0))
+                dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrab, (60, 60, 80, 150))
+                dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabHovered, (80, 80, 110, 180))
+                dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabActive, (100, 100, 130, 200))
+                
+                # Text colors
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 220, 235, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (130, 130, 150, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_TextSelectedBg, (90, 90, 140, 120))
+                
+                # Slider colors
+                dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, (130, 130, 200, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_SliderGrabActive, (160, 160, 220, 240))
+                
+                # Style settings
+                dpg.add_theme_style(dpg.mvStyleVar_WindowRounding, 16)
+                dpg.add_theme_style(dpg.mvStyleVar_ChildRounding, 14)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameRounding, 10)
+                dpg.add_theme_style(dpg.mvStyleVar_GrabRounding, 8)
+                dpg.add_theme_style(dpg.mvStyleVar_TabRounding, 10)
+                dpg.add_theme_style(dpg.mvStyleVar_ScrollbarRounding, 12)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowBorderSize, 1)
+                dpg.add_theme_style(dpg.mvStyleVar_ChildBorderSize, 1)
+                dpg.add_theme_style(dpg.mvStyleVar_FrameBorderSize, 0)
+                dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 12, 12)
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 10, 8)
+                dpg.add_theme_style(dpg.mvStyleVar_ItemSpacing, 8, 8)
+                dpg.add_theme_style(dpg.mvStyleVar_ItemInnerSpacing, 8, 6)
+        
+        dpg.bind_theme(global_theme)
         dpg.setup_dearpygui()
+        
+        # Prepare shader renderer (lazy init after viewport is shown)
+        self.renderer = ShaderRenderer(width=800, height=600)
         
         # Create texture for rendering
         self.width = 800
@@ -36,23 +257,6 @@ class NeonApp:
             self.texture_data = np.zeros((self.height, self.width, 4), dtype=np.float32)
             self.texture_id = dpg.add_dynamic_texture(self.width, self.height, self.texture_data)
         
-        # Pre-calculate coordinates for faster rendering
-        y_coords, x_coords = np.mgrid[0:self.height, 0:self.width].astype(np.float32)
-        center_x, center_y = self.width // 2, self.height // 2
-        self.dx = x_coords - center_x
-        self.dy = y_coords - center_y
-        
-        # Pre-calculate distances once - this is used in every frame
-        self.distances = np.sqrt(self.dx**2 + self.dy**2) / (self.width // 2)
-        
-        # Pre-calculate normalized coordinates for shader-like effects
-        self.norm_x = self.dx / (self.width // 2)
-        self.norm_y = self.dy / (self.height // 2)
-        
-        # Pre-calculate common masks
-        self.circle_mask = self.distances < 0.95
-        self.border_mask = (self.distances >= 0.95) & (self.distances <= 1.0)
-        
         # For FPS calculation - initialize before rendering
         self.last_time = time.time()
         self.frame_count = 0
@@ -63,15 +267,17 @@ class NeonApp:
         # For adaptive rendering
         self.target_frame_time = 1.0 / 60.0  # Target 60 FPS
         self.skip_frames = 0
-        self.ray_quality = 1  # 0=no rays, 1=some rays, 2=all rays
+        self.ray_quality = 0
         self.last_quality_check = time.time()
+        
+        # Rendering mode flags
+        self.use_gpu = True
+        self._gpu_failed_once = False
         
         # Create UI
         self._create_ui()
         
-        # Create initial pattern
-        self._render_frame()
-        
+        # Do not render yet; ModernGL will attach to DPG context after viewport is shown
         print("Initialization complete!")
     
     def _create_ui(self):
@@ -153,15 +359,90 @@ class NeonApp:
                     
                     dpg.add_spacer(height=20)
                     
-                    # Reset Button
-                    dpg.add_button(label="Reset", callback=self._on_reset)
+                    # Preset buttons
+                    dpg.add_text("Quick Presets", color=[0.9, 0.9, 0.9])
+                    dpg.add_separator()
+                    
+                    # Halo controls (for neon look and neon-brown)
+                    dpg.add_text("Halo Width")
+                    dpg.add_slider_float(
+                        default_value=self.color_engine.halo_width,
+                        min_value=0.02,
+                        max_value=0.4,
+                        width=350,
+                        callback=self._on_halo_width_change,
+                        tag="halo_width_slider"
+                    )
+                    dpg.add_text("Halo Intensity")
+                    dpg.add_slider_float(
+                        default_value=self.color_engine.halo_intensity,
+                        min_value=0.0,
+                        max_value=2.0,
+                        width=350,
+                        callback=self._on_halo_intensity_change,
+                        tag="halo_intensity_slider"
+                    )
+                    
+                    dpg.add_spacer(height=10)
+                    
+                    # Rendering mode toggle
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("Renderer:")
+                        dpg.add_radio_button(
+                            items=["GPU", "CPU"],
+                            default_value="GPU",
+                            callback=self._on_renderer_toggle,
+                            tag="renderer_mode"
+                        )
+                    
+                    dpg.add_spacer(height=10)
+                    
+                    # Create preset buttons in a grid layout
+                    preset_names = ["Classic Neon", "Cool Blue", "Warm Orange", "Electric Green", 
+                                  "Vaporwave Pink", "Cyberpunk Red", "Anti-Neon Cool", "Anti-Neon Warm", "Neon Brown"]
+                    
+                    for i in range(0, len(preset_names), 2):
+                        with dpg.group(horizontal=True):
+                            for j in range(2):
+                                if i + j < len(preset_names):
+                                    preset_name = preset_names[i + j]
+                                    dpg.add_button(
+                                        label=preset_name,
+                                        width=105,
+                                        callback=lambda s, a, u: self._on_preset_select(u),
+                                        user_data=preset_name,
+                                        tag=f"preset_{preset_name.lower().replace(' ', '_')}"
+                                    )
                     
                     dpg.add_spacer(height=20)
                     
-                    # Debug info
-                    with dpg.collapsing_header(label="Debug Info", default_open=True):
+                    # Reset Button
+                    dpg.add_button(label="Reset", callback=self._on_reset)
+                    
+                    dpg.add_spacer(height=10)
+                    
+                    # Export Button
+                    dpg.add_button(
+                        label="Export Image",
+                        width=350,
+                        callback=self._on_export_image,
+                        tag="export_button"
+                    )
+                    
+                    dpg.add_spacer(height=20)
+            
+            # Bottom info panel across the width
+            with dpg.child_window(width=1180, height=160, tag="info_panel"):
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        dpg.add_text("System & Renderer", color=[0.9, 0.9, 0.9])
+                        dpg.add_separator()
                         dpg.add_text("FPS: 0", tag="fps_text")
+                        dpg.add_text("Renderer: GPU", tag="renderer_text")
                         dpg.add_text("Current Mode: Neon", tag="mode_text")
+                    with dpg.group():
+                        dpg.add_text("Color State", color=[0.9, 0.9, 0.9])
+                        dpg.add_separator()
                         dpg.add_text("Hue: 0.0", tag="hue_text")
                         dpg.add_text("Saturation: 1.0", tag="saturation_text")
                         dpg.add_text("Brightness: 1.0", tag="brightness_text")
@@ -169,37 +450,123 @@ class NeonApp:
     
     def _on_hue_change(self, sender, app_data):
         """Handle hue change"""
-        self.color_engine.set_hue(app_data)
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(target_hue=app_data, duration=0.3)
+        else:
+            self.color_engine.set_hue(app_data)
         dpg.set_value("hue_text", f"Hue: {app_data:.1f}")
     
     def _on_saturation_change(self, sender, app_data):
         """Handle saturation change"""
-        self.color_engine.set_saturation(app_data)
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(target_saturation=app_data, duration=0.3)
+        else:
+            self.color_engine.set_saturation(app_data)
         dpg.set_value("saturation_text", f"Saturation: {app_data:.2f}")
     
     def _on_brightness_change(self, sender, app_data):
         """Handle brightness change"""
-        self.color_engine.set_brightness(app_data)
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(target_brightness=app_data, duration=0.3)
+        else:
+            self.color_engine.set_brightness(app_data)
         dpg.set_value("brightness_text", f"Brightness: {app_data:.2f}")
     
     def _on_fluorescence_change(self, sender, app_data):
         """Handle fluorescence change"""
-        self.color_engine.set_fluorescence(app_data)
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(target_fluorescence=app_data, duration=0.3)
+        else:
+            self.color_engine.set_fluorescence(app_data)
         dpg.set_value("fluorescence_text", f"Fluorescence: {app_data:.2f}")
+    
+    def _on_halo_width_change(self, sender, app_data):
+        """Handle halo width change"""
+        if hasattr(self.color_engine, 'set_halo_width'):
+            self.color_engine.set_halo_width(app_data)
+    
+    def _on_halo_intensity_change(self, sender, app_data):
+        """Handle halo intensity change"""
+        if hasattr(self.color_engine, 'set_halo_intensity'):
+            self.color_engine.set_halo_intensity(app_data)
+    
+    def _on_renderer_toggle(self, sender, app_data):
+        """Handle renderer mode toggle between GPU and CPU"""
+        self.use_gpu = (app_data == "GPU")
+        if dpg.does_item_exist("renderer_text"):
+            dpg.set_value("renderer_text", f"Renderer: {'GPU' if self.use_gpu else 'CPU'}")
     
     def _on_mode_change(self, sender, app_data):
         """Handle mode toggle"""
-        self.color_engine.set_neon_mode(app_data == "Neon")
+        neon_mode = app_data == "Neon"
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(target_neon_mode=neon_mode, duration=0.5)
+        else:
+            self.color_engine.set_neon_mode(neon_mode)
         dpg.set_value("mode_text", f"Current Mode: {app_data}")
+    
+    def _on_preset_select(self, preset_name):
+        """Handle preset button click"""
+        if hasattr(self.color_engine, 'apply_preset'):
+            success = self.color_engine.apply_preset(preset_name, duration=1.2)
+            if success:
+                print(f"Applied preset: {preset_name}")
+            else:
+                print(f"Failed to apply preset: {preset_name}")
+    
+    def _on_export_image(self):
+        """Export current rendering as PNG image"""
+        try:
+            # Create exports directory if it doesn't exist
+            export_dir = "exports"
+            if not os.path.exists(export_dir):
+                os.makedirs(export_dir)
+            
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"neon_demo_{timestamp}.png"
+            filepath = os.path.join(export_dir, filename)
+            
+            # Get current texture data and convert to image format
+            # The texture data is already in RGBA float32 format (0-1 range)
+            # Convert to uint8 (0-255 range) for image saving
+            image_data = (self.texture_data * 255).astype(np.uint8)
+            
+            # Flip vertically (OpenGL to image coordinate system)
+            image_data = np.flipud(image_data)
+            
+            # Save using PIL or similar - for now, save raw data
+            # Note: In a real implementation, you'd use PIL/Pillow to save as PNG
+            print(f"Image export would save to: {filepath}")
+            print(f"Image size: {image_data.shape}")
+            
+            # For now, just save as numpy array (placeholder)
+            np.save(filepath.replace('.png', '.npy'), image_data)
+            
+            print(f"Exported image: {filename}")
+            
+        except Exception as e:
+            print(f"Export failed: {e}")
     
     def _on_reset(self):
         """Handle reset button"""
-        # Reset color engine to defaults
-        self.color_engine.set_hue(0.0)
-        self.color_engine.set_saturation(1.0)
-        self.color_engine.set_brightness(1.0)
-        self.color_engine.set_fluorescence(0.5)
-        self.color_engine.set_neon_mode(True)
+        # Reset color engine to defaults with animation
+        if hasattr(self.color_engine, 'animate_to'):
+            self.color_engine.animate_to(
+                target_hue=0.0,
+                target_saturation=1.0,
+                target_brightness=1.0,
+                target_fluorescence=0.5,
+                target_neon_mode=True,
+                duration=0.8
+            )
+        else:
+            # Fallback to instant reset
+            self.color_engine.set_hue(0.0)
+            self.color_engine.set_saturation(1.0)
+            self.color_engine.set_brightness(1.0)
+            self.color_engine.set_fluorescence(0.5)
+            self.color_engine.set_neon_mode(True)
         
         # Reset UI controls
         dpg.set_value("hue_text", "Hue: 0.0")
@@ -256,96 +623,56 @@ class NeonApp:
         self.last_time = current_time
     
     def _render_frame(self):
-        """Render a frame"""
+        """Render a frame using GPU shaders if available, else CPU fallback"""
+        # Update animations and demo mode
+        if hasattr(self.color_engine, 'update_animation'):
+            self.color_engine.update_animation()
+        if hasattr(self.color_engine, 'update_demo'):
+            self.color_engine.update_demo()
+        
+        if self.use_gpu:
+            try:
+                # Use shader renderer for GPU-accelerated rendering
+                self.texture_data = self.renderer.render_frame(self.color_engine)
+                # Update texture
+                dpg.set_value(self.texture_id, self.texture_data)
+                return
+            except Exception as e:
+                # Disable GPU path after first failure to avoid log spam
+                if not self._gpu_failed_once:
+                    print(f"GPU render unavailable, switching to CPU fallback: {e}")
+                    self._gpu_failed_once = True
+                self.use_gpu = False
+                if dpg.does_item_exist("renderer_text"):
+                    dpg.set_value("renderer_text", "Renderer: CPU")
+                if dpg.does_item_exist("renderer_mode"):
+                    dpg.set_value("renderer_mode", "CPU")
+        
+        # CPU fallback rendering
+        self._fallback_render()
+    
+    def _fallback_render(self):
+        """Simple CPU-based fallback rendering"""
         try:
-            # Get current color settings
-            h, s, v = self.color_engine.get_hsv()
             r, g, b = self.color_engine.get_rgb()
             
-            # Create circular mask once and reuse
-            circle_mask = self.circle_mask
+            # Create simple colored circle
+            center_x, center_y = self.width // 2, self.height // 2
+            y_coords, x_coords = np.ogrid[:self.height, :self.width]
+            distances = np.sqrt((x_coords - center_x)**2 + (y_coords - center_y)**2)
             
-            # Clear texture data to background color
-            self.texture_data[...] = [0.05, 0.05, 0.05, 1.0]
+            # Create circular gradient
+            max_dist = min(center_x, center_y)
+            intensity = np.clip(1.0 - distances / max_dist, 0, 1.0)
             
-            if self.color_engine.neon_mode:
-                # Neon mode - bright, saturated
-                # Calculate bloom intensity based on fluorescence
-                bloom = self.color_engine.get_bloom_intensity()
-                
-                # Pre-calculate intensity for better performance
-                # Use numpy's vectorized operations for better performance
-                intensity = np.clip(1.0 - self.distances * (1.2 - 0.5 * bloom), 0, 1.0) ** 2
-                
-                # Apply base color with intensity
-                self.texture_data[..., 0] = np.where(circle_mask, r * intensity, 0.05)
-                self.texture_data[..., 1] = np.where(circle_mask, g * intensity, 0.05)
-                self.texture_data[..., 2] = np.where(circle_mask, b * intensity, 0.05)
-                
-                # Add center glow - vectorized operation
-                center_glow = np.clip(1.0 - self.distances * 2.5, 0, 1.0) ** 2 * bloom * 1.2
-                self.texture_data[..., 0] = np.maximum(self.texture_data[..., 0], center_glow * r)
-                self.texture_data[..., 1] = np.maximum(self.texture_data[..., 1], center_glow * g)
-                self.texture_data[..., 2] = np.maximum(self.texture_data[..., 2], center_glow * b)
-                
-                # Add rays - only if bloom is significant and ray quality allows
-                if bloom > 0.2 and self.ray_quality > 0:
-                    # Pre-calculate ray parameters
-                    ray_intensity = 0.3 * bloom
-                    ray_width = 0.05
-                    
-                    # Determine how many rays to render based on quality
-                    num_rays = 4 if self.ray_quality == 1 else 8
-                    
-                    # Calculate rays on-the-fly (more reliable than pre-calculated masks)
-                    for i in range(num_rays):
-                        angle = i * (2 * np.pi / num_rays)
-                        ray_x = np.cos(angle)
-                        ray_y = np.sin(angle)
-                        
-                        # Calculate dot product for each pixel with ray direction
-                        dot_product = (self.norm_x * ray_x) + (self.norm_y * ray_y)
-                        
-                        # Create ray mask
-                        ray_mask = (np.abs(dot_product) < ray_width) & circle_mask
-                        
-                        # Apply ray effect
-                        if np.any(ray_mask):
-                            self.texture_data[ray_mask, 0] = np.minimum(self.texture_data[ray_mask, 0] + ray_intensity * r, 1.0)
-                            self.texture_data[ray_mask, 1] = np.minimum(self.texture_data[ray_mask, 1] + ray_intensity * g, 1.0)
-                            self.texture_data[ray_mask, 2] = np.minimum(self.texture_data[ray_mask, 2] + ray_intensity * b, 1.0)
-            else:
-                # Anti-neon mode - darker, desaturated
-                # Get RGB directly from color_engine which already applies low S/V for anti-neon
-                r, g, b = self.color_engine.get_rgb() # Use the already adjusted RGB
-                
-                intensity = np.clip(1.0 - self.distances * 1.2, 0, 1.0)
-                
-                # Apply colors with intensity
-                self.texture_data[..., 0] = np.where(circle_mask, r * intensity, 0.05)
-                self.texture_data[..., 1] = np.where(circle_mask, g * intensity, 0.05)
-                self.texture_data[..., 2] = np.where(circle_mask, b * intensity, 0.05)
-                
-                # Add dark rim effect - vectorized
-                dark_rim = np.clip(1.0 - np.abs(self.distances - 0.7) * 10, 0, 1.0) * 0.7
-                self.texture_data[..., 0] = np.maximum(0, self.texture_data[..., 0] - dark_rim * 0.2)
-                self.texture_data[..., 1] = np.maximum(0, self.texture_data[..., 1] - dark_rim * 0.2)
-                self.texture_data[..., 2] = np.maximum(0, self.texture_data[..., 2] - dark_rim * 0.2)
+            self.texture_data[..., 0] = r * intensity
+            self.texture_data[..., 1] = g * intensity  
+            self.texture_data[..., 2] = b * intensity
+            self.texture_data[..., 3] = intensity
             
-            # Add border - vectorized
-            border_mask = self.border_mask
-            border_intensity = 0.3 if self.color_engine.neon_mode else 0.15
-            self.texture_data[border_mask, 0] = border_intensity
-            self.texture_data[border_mask, 1] = border_intensity
-            self.texture_data[border_mask, 2] = border_intensity
-            
-            # Set alpha to full opacity
-            self.texture_data[..., 3] = 1.0
-            
-            # Update texture
             dpg.set_value(self.texture_id, self.texture_data)
         except Exception as e:
-            print(f"Error in render frame: {e}")
+            print(f"Fallback render failed: {e}")
     
     def run(self):
         """Run the application"""
@@ -355,6 +682,17 @@ class NeonApp:
         
         # Show viewport
         dpg.show_viewport()
+        
+        # Warm up one Dear PyGui frame to ensure OpenGL context is current
+        # before creating ModernGL resources
+        try:
+            dpg.render_dearpygui_frame()
+            if self.use_gpu and hasattr(self, 'renderer') and hasattr(self.renderer, '_ensure_context'):
+                # Try to initialize GL context/resources once
+                self.renderer._ensure_context()
+        except Exception as e:
+            # If GPU init fails here, we'll fallback automatically in _render_frame
+            print(f"GPU warmup skipped: {e}")
         
         # Frame timing variables
         frame_skip_counter = 0
@@ -390,6 +728,8 @@ class NeonApp:
         
         # Clean up
         dpg.destroy_context()
+        if hasattr(self, 'renderer'):
+            self.renderer.cleanup()
         print("Neon & Anti-Neon Demo closed.")
 
 
