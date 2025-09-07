@@ -31,7 +31,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-2. Install dependencies:
+2.Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -46,6 +46,7 @@ python main.py
 ```
 
 Notes:
+
 - On some macOS systems, Dear PyGui’s context may not expose a GL 3.3 context. The app will automatically switch to CPU rendering and continue running.
 - Use the Renderer toggle (GPU/CPU) in the UI to force modes as needed.
 

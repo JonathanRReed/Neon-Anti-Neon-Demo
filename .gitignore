@@ -53,3 +53,4 @@ exports/*.npy
 *.tmp
 *.temp
 ~$*
+/exports

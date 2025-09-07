@@ -187,6 +187,28 @@ class NeonApp:
         dpg.create_context()
         dpg.create_viewport(title="Neon & Anti-Neon Demo", width=1200, height=800)
         
+        # Fonts: try to load a bold font for headers (fallback to default)
+        self.header_font = None
+        with dpg.font_registry():
+            # Try a few common bold fonts on macOS
+            candidate_paths = [
+                "/System/Library/Fonts/SFNS.ttf",  # older macOS
+                "/System/Library/Fonts/SFNSDisplay.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/HelveticaNeue.ttc",
+            ]
+            for p in candidate_paths:
+                try:
+                    if os.path.exists(p):
+                        self.header_font = dpg.add_font(p, 18)
+                        break
+                except Exception:
+                    pass
+            # Fallback: just set a larger default font if none found
+            if self.header_font is None:
+                # This adds a default font at a larger size (not truly bold)
+                self.header_font = dpg.add_font_default(size=18)
+        
         # Set modern dark theme
         with dpg.theme() as global_theme:
             with dpg.theme_component(dpg.mvAll):
@@ -218,10 +240,10 @@ class NeonApp:
                 dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabHovered, (80, 80, 110, 180))
                 dpg.add_theme_color(dpg.mvThemeCol_ScrollbarGrabActive, (100, 100, 130, 200))
                 
-                # Text colors
-                dpg.add_theme_color(dpg.mvThemeCol_Text, (220, 220, 235, 255))
-                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (130, 130, 150, 200))
-                dpg.add_theme_color(dpg.mvThemeCol_TextSelectedBg, (90, 90, 140, 120))
+                # Text colors (set to white)
+                dpg.add_theme_color(dpg.mvThemeCol_Text, (255, 255, 255, 255))
+                dpg.add_theme_color(dpg.mvThemeCol_TextDisabled, (220, 220, 220, 200))
+                dpg.add_theme_color(dpg.mvThemeCol_TextSelectedBg, (120, 120, 160, 120))
                 
                 # Slider colors
                 dpg.add_theme_color(dpg.mvThemeCol_SliderGrab, (130, 130, 200, 220))
@@ -275,6 +297,10 @@ class NeonApp:
         self.use_gpu = True
         self._gpu_failed_once = False
         
+        # Toast/notifications
+        self._toast_id = None
+        self._toast_expire = 0.0
+        
         # Create UI
         self._create_ui()
         
@@ -295,7 +321,9 @@ class NeonApp:
                 
                 # Right panel - Controls
                 with dpg.child_window(width=380, height=600, tag="control_panel"):
-                    dpg.add_text("Color Settings", color=[0.9, 0.9, 0.9])
+                    dpg.add_text("Color Settings", color=[255, 255, 255], tag="hdr_color_settings")
+                    if self.header_font:
+                        dpg.bind_item_font("hdr_color_settings", self.header_font)
                     dpg.add_separator()
                     
                     # Mode toggle
@@ -361,7 +389,9 @@ class NeonApp:
                     dpg.add_spacer(height=20)
                     
                     # Preset buttons
-                    dpg.add_text("Quick Presets", color=[0.9, 0.9, 0.9])
+                    dpg.add_text("Quick Presets", color=[255, 255, 255], tag="hdr_quick_presets")
+                    if self.header_font:
+                        dpg.bind_item_font("hdr_quick_presets", self.header_font)
                     dpg.add_separator()
                     
                     # Halo controls (for neon look and neon-brown)
@@ -436,13 +466,17 @@ class NeonApp:
             with dpg.child_window(width=1180, height=160, tag="info_panel"):
                 with dpg.group(horizontal=True):
                     with dpg.group():
-                        dpg.add_text("System & Renderer", color=[0.9, 0.9, 0.9])
+                        dpg.add_text("System & Renderer", color=[255, 255, 255], tag="hdr_system_renderer")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_system_renderer", self.header_font)
                         dpg.add_separator()
                         dpg.add_text("FPS: 0", tag="fps_text")
                         dpg.add_text("Renderer: GPU", tag="renderer_text")
                         dpg.add_text("Current Mode: Neon", tag="mode_text")
                     with dpg.group():
-                        dpg.add_text("Color State", color=[0.9, 0.9, 0.9])
+                        dpg.add_text("Color State", color=[255, 255, 255], tag="hdr_color_state")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_color_state", self.header_font)
                         dpg.add_separator()
                         dpg.add_text("Hue: 0.0", tag="hue_text")
                         dpg.add_text("Saturation: 1.0", tag="saturation_text")
@@ -535,6 +569,7 @@ class NeonApp:
             pixel_data = self.texture_data
             if pixel_data is None:
                 print("No image data to export yet.")
+                self._show_toast("No image data to export yet.")
                 return
             
             # Convert float32 RGBA (0-1) to uint8 (0-255)
@@ -545,10 +580,41 @@ class NeonApp:
             # Save PNG via Pillow
             image = Image.fromarray(img_uint8, mode='RGBA')
             image.save(filepath, format='PNG')
-            print(f"Exported image: {filepath}")
+            msg = f"Exported to {filepath}"
+            print(msg)
+            self._show_toast(msg)
             
         except Exception as e:
-            print(f"Export failed: {e}")
+            err = f"Export failed: {e}"
+            print(err)
+            self._show_toast(err)
+    
+    def _show_toast(self, message: str, duration: float = 2.5):
+        """Show a temporary toast notification in the top-right corner."""
+        # Delete existing toast if present
+        try:
+            if self._toast_id and dpg.does_item_exist(self._toast_id):
+                dpg.delete_item(self._toast_id)
+        except Exception:
+            pass
+        
+        # Compute position near top-right of the viewport
+        try:
+            vp_w = dpg.get_viewport_client_width()
+            vp_h = dpg.get_viewport_client_height()
+        except Exception:
+            vp_w, vp_h = 1200, 800
+        width = 420
+        height = 60
+        pos_x = max(10, vp_w - width - 20)
+        pos_y = 20
+        
+        with dpg.window(no_title_bar=True, no_move=True, no_resize=True, no_collapse=True,
+                        autosize=False, width=width, height=height, pos=[pos_x, pos_y],
+                        no_close=True, tag=f"toast_{int(time.time()*1000)}") as win_id:
+            dpg.add_text(message, color=[255, 255, 255])
+        self._toast_id = win_id
+        self._toast_expire = time.time() + duration
     
     def _on_reset(self):
         """Handle reset button"""
@@ -652,6 +718,11 @@ class NeonApp:
                 self.texture_data = self.renderer.render_frame(self.color_engine)
                 # Update texture
                 dpg.set_value(self.texture_id, self.texture_data)
+                # Also handle toast expiration while GPU running
+                if self._toast_id and time.time() > self._toast_expire:
+                    if dpg.does_item_exist(self._toast_id):
+                        dpg.delete_item(self._toast_id)
+                    self._toast_id = None
                 return
             except Exception as e:
                 # Disable GPU path after first failure to avoid log spam
@@ -666,6 +737,12 @@ class NeonApp:
         
         # CPU fallback rendering
         self._fallback_render()
+        
+        # Toast lifetime management
+        if self._toast_id and time.time() > self._toast_expire:
+            if dpg.does_item_exist(self._toast_id):
+                dpg.delete_item(self._toast_id)
+            self._toast_id = None
     
     def _fallback_render(self):
         """Simple CPU-based fallback rendering"""
