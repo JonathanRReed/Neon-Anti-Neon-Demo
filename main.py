@@ -9,6 +9,7 @@ import time
 import moderngl as mgl
 import os
 from datetime import datetime
+from PIL import Image
 
 from color_engine import ColorEngine
 
@@ -508,9 +509,12 @@ class NeonApp:
     def _on_preset_select(self, preset_name):
         """Handle preset button click"""
         if hasattr(self.color_engine, 'apply_preset'):
-            success = self.color_engine.apply_preset(preset_name, duration=1.2)
+            success = self.color_engine.apply_preset(preset_name, duration=1.0)
             if success:
                 print(f"Applied preset: {preset_name}")
+                # Sync UI hints (texts)
+                if dpg.does_item_exist("mode_text"):
+                    dpg.set_value("mode_text", f"Current Mode: {'Neon' if self.color_engine.neon_mode else 'Anti-Neon'}")
             else:
                 print(f"Failed to apply preset: {preset_name}")
     
@@ -527,23 +531,21 @@ class NeonApp:
             filename = f"neon_demo_{timestamp}.png"
             filepath = os.path.join(export_dir, filename)
             
-            # Get current texture data and convert to image format
-            # The texture data is already in RGBA float32 format (0-1 range)
-            # Convert to uint8 (0-255 range) for image saving
-            image_data = (self.texture_data * 255).astype(np.uint8)
+            # Ensure we have recent pixels on CPU
+            pixel_data = self.texture_data
+            if pixel_data is None:
+                print("No image data to export yet.")
+                return
             
-            # Flip vertically (OpenGL to image coordinate system)
-            image_data = np.flipud(image_data)
+            # Convert float32 RGBA (0-1) to uint8 (0-255)
+            img_uint8 = np.clip(pixel_data * 255.0, 0, 255).astype(np.uint8)
+            # Flip vertically for image coordinate system
+            img_uint8 = np.flipud(img_uint8)
             
-            # Save using PIL or similar - for now, save raw data
-            # Note: In a real implementation, you'd use PIL/Pillow to save as PNG
-            print(f"Image export would save to: {filepath}")
-            print(f"Image size: {image_data.shape}")
-            
-            # For now, just save as numpy array (placeholder)
-            np.save(filepath.replace('.png', '.npy'), image_data)
-            
-            print(f"Exported image: {filename}")
+            # Save PNG via Pillow
+            image = Image.fromarray(img_uint8, mode='RGBA')
+            image.save(filepath, format='PNG')
+            print(f"Exported image: {filepath}")
             
         except Exception as e:
             print(f"Export failed: {e}")
@@ -558,7 +560,7 @@ class NeonApp:
                 target_brightness=1.0,
                 target_fluorescence=0.5,
                 target_neon_mode=True,
-                duration=0.8
+                duration=0.5
             )
         else:
             # Fallback to instant reset
@@ -568,12 +570,26 @@ class NeonApp:
             self.color_engine.set_fluorescence(0.5)
             self.color_engine.set_neon_mode(True)
         
-        # Reset UI controls
-        dpg.set_value("hue_text", "Hue: 0.0")
-        dpg.set_value("saturation_text", "Saturation: 1.0")
-        dpg.set_value("brightness_text", "Brightness: 1.0")
-        dpg.set_value("fluorescence_text", "Fluorescence: 0.5")
-        dpg.set_value("mode_text", "Current Mode: Neon")
+        # Reset UI controls (texts and sliders)
+        if dpg.does_item_exist("hue_text"):
+            dpg.set_value("hue_text", "Hue: 0.0")
+        if dpg.does_item_exist("saturation_text"):
+            dpg.set_value("saturation_text", "Saturation: 1.0")
+        if dpg.does_item_exist("brightness_text"):
+            dpg.set_value("brightness_text", "Brightness: 1.0")
+        if dpg.does_item_exist("fluorescence_text"):
+            dpg.set_value("fluorescence_text", "Fluorescence: 0.5")
+        if dpg.does_item_exist("mode_text"):
+            dpg.set_value("mode_text", "Current Mode: Neon")
+        # Sliders
+        for tag, val in [("hue_slider", 0.0), ("saturation_slider", 1.0), ("brightness_slider", 1.0), ("fluorescence_slider", 0.5), ("halo_width_slider", self.color_engine.halo_width), ("halo_intensity_slider", self.color_engine.halo_intensity)]:
+            if dpg.does_item_exist(tag):
+                dpg.set_value(tag, val)
+        # Renderer toggle back to GPU (will fallback if needed)
+        if dpg.does_item_exist("renderer_mode"):
+            dpg.set_value("renderer_mode", "GPU")
+        if dpg.does_item_exist("renderer_text"):
+            dpg.set_value("renderer_text", "Renderer: GPU")
     
     def _calculate_fps(self):
         """Calculate frames per second"""
