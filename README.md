@@ -1,6 +1,7 @@
 # Neon & Anti-Neon Demo (OpenGL / Python)
 
 Inspired by the Vsauce short on neon/brown color perception.
+[Vsauce Neon/Brown](https://www.youtube.com/shorts/vnpOGuvZsX0)
 
 An interactive real‑time simulation of neon colors and their “anti‑neon” counterparts, featuring a liquid‑glass UI, GPU shaders (with automatic CPU fallback), dual‑color core/halo neon rendering, smooth animations, and one‑click presets (including “Neon Brown”).
 
