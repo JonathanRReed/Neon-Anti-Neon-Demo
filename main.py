@@ -315,6 +315,9 @@ class NeonApp:
             # Initialize rendering mode flags
             self.use_gpu = MODERNGL_AVAILABLE and self.renderer is not None
             self._gpu_failed_once = False
+            self._last_render_time = 0.0
+            self._render_cache_valid = False
+            self._last_color_state = None
             
             # Initialize UI state
             self._toast_id = None
@@ -477,6 +480,23 @@ class NeonApp:
             dpg.destroy_context()
         except Exception:
             pass
+    
+    def _has_color_state_changed(self) -> bool:
+        """Check if the color state has changed since last render"""
+        current_state = (
+            self.color_engine.hue,
+            self.color_engine.saturation, 
+            self.color_engine.brightness,
+            self.color_engine.fluorescence,
+            self.color_engine.neon_mode,
+            self.color_engine.halo_width,
+            self.color_engine.halo_intensity
+        )
+        
+        if self._last_color_state != current_state:
+            self._last_color_state = current_state
+            return True
+        return False
     
     def _create_ui(self):
         """Create the user interface"""
@@ -661,6 +681,7 @@ class NeonApp:
         else:
             self.color_engine.set_hue(app_data)
         dpg.set_value("hue_text", f"Hue: {app_data:.1f}")
+        self._render_cache_valid = False
     
     def _on_saturation_change(self, sender, app_data):
         """Handle saturation change"""
@@ -669,6 +690,7 @@ class NeonApp:
         else:
             self.color_engine.set_saturation(app_data)
         dpg.set_value("saturation_text", f"Saturation: {app_data:.2f}")
+        self._render_cache_valid = False
     
     def _on_brightness_change(self, sender, app_data):
         """Handle brightness change"""
@@ -677,6 +699,7 @@ class NeonApp:
         else:
             self.color_engine.set_brightness(app_data)
         dpg.set_value("brightness_text", f"Brightness: {app_data:.2f}")
+        self._render_cache_valid = False
     
     def _on_fluorescence_change(self, sender, app_data):
         """Handle fluorescence change"""
@@ -685,16 +708,19 @@ class NeonApp:
         else:
             self.color_engine.set_fluorescence(app_data)
         dpg.set_value("fluorescence_text", f"Fluorescence: {app_data:.2f}")
+        self._render_cache_valid = False
     
     def _on_halo_width_change(self, sender, app_data):
         """Handle halo width change"""
         if hasattr(self.color_engine, 'set_halo_width'):
             self.color_engine.set_halo_width(app_data)
+        self._render_cache_valid = False
     
     def _on_halo_intensity_change(self, sender, app_data):
         """Handle halo intensity change"""
         if hasattr(self.color_engine, 'set_halo_intensity'):
             self.color_engine.set_halo_intensity(app_data)
+        self._render_cache_valid = False
     
     def _on_renderer_toggle(self, sender, app_data):
         """Handle renderer mode toggle between GPU and CPU"""
@@ -710,6 +736,7 @@ class NeonApp:
         else:
             self.color_engine.set_neon_mode(neon_mode)
         dpg.set_value("mode_text", f"Current Mode: {app_data}")
+        self._render_cache_valid = False
     
     def _on_preset_select(self, preset_name):
         """Handle preset button click"""
@@ -720,8 +747,10 @@ class NeonApp:
                 # Sync UI hints (texts)
                 if dpg.does_item_exist("mode_text"):
                     dpg.set_value("mode_text", f"Current Mode: {'Neon' if self.color_engine.neon_mode else 'Anti-Neon'}")
+                self._render_cache_valid = False
             else:
                 print(f"Failed to apply preset: {preset_name}")
+                self._show_toast(f"Failed to apply preset: {preset_name}", 2.0)
     
     def _on_export_image(self):
         """Export current rendering as PNG image with improved error handling"""
@@ -855,6 +884,9 @@ class NeonApp:
             dpg.set_value("renderer_mode", "GPU")
         if dpg.does_item_exist("renderer_text"):
             dpg.set_value("renderer_text", "Renderer: GPU")
+        
+        # Invalidate render cache
+        self._render_cache_valid = False
     
     def _calculate_fps(self):
         """Calculate frames per second with improved performance monitoring"""
@@ -898,7 +930,10 @@ class NeonApp:
         self.last_time = current_time
     
     def _render_frame(self):
-        """Render a frame using GPU shaders if available, else CPU fallback"""
+        """Render a frame using GPU shaders if available, else CPU fallback
+        
+        Optimized to skip rendering when color state hasn't changed and no animations are running.
+        """
         try:
             # Update animations and demo mode
             if hasattr(self.color_engine, 'update_animation'):
@@ -906,11 +941,28 @@ class NeonApp:
             if hasattr(self.color_engine, 'update_demo'):
                 self.color_engine.update_demo()
             
+            # Performance optimization: skip render if nothing changed
+            current_time = time.time()
+            has_changed = self._has_color_state_changed()
+            is_animating = getattr(self.color_engine, 'is_animating', False)
+            
+            # Only render if something changed, animating, or enough time passed for demo mode
+            time_since_render = current_time - self._last_render_time
+            should_render = (has_changed or is_animating or 
+                           (hasattr(self.color_engine, 'demo_mode') and 
+                            self.color_engine.demo_mode and time_since_render > 0.033))  # ~30fps for demo
+            
+            if not should_render and self._render_cache_valid:
+                self._handle_toast_expiration()
+                return
+            
             # Try GPU rendering if enabled and available
             if self.use_gpu and self.renderer:
                 try:
                     self.texture_data = self.renderer.render_frame(self.color_engine)
                     dpg.set_value(self.texture_id, self.texture_data)
+                    self._render_cache_valid = True
+                    self._last_render_time = current_time
                     self._handle_toast_expiration()
                     return
                     
@@ -926,6 +978,8 @@ class NeonApp:
             
             # CPU fallback rendering
             self._fallback_render()
+            self._render_cache_valid = True
+            self._last_render_time = current_time
             self._handle_toast_expiration()
             
         except Exception as e:
@@ -934,6 +988,7 @@ class NeonApp:
             if hasattr(self, 'texture_data') and self.texture_data is not None:
                 self.texture_data.fill(0)
                 dpg.set_value(self.texture_id, self.texture_data)
+                self._render_cache_valid = False
     
     def _update_renderer_ui_status(self, mode):
         """Update UI to reflect current rendering mode"""
