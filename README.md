@@ -29,10 +29,10 @@ Feel free to use, modify, and distribute this code as you see fit. I will not be
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-2.Install dependencies:
+2. Install dependencies:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -46,10 +46,18 @@ Run the application:
 python main.py
 ```
 
+**Testing**: Run the test suite to validate functionality:
+
+```bash
+python test_basic.py
+```
+
 Notes:
 
 - On some macOS systems, Dear PyGui’s context may not expose a GL 3.3 context. The app will automatically switch to CPU rendering and continue running.
 - Use the Renderer toggle (GPU/CPU) in the UI to force modes as needed.
+- If ModernGL is not available, the application will run in CPU-only mode.
+- The application includes comprehensive error handling and will gracefully fallback when GPU features are unavailable.
 
 ### Controls
 
