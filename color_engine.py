@@ -29,7 +29,7 @@ class ColorEngine:
         self.hue = 0.0  # 0-360 degrees
         self.saturation = 1.0  # 0.0-1.0
         self.brightness = 1.0  # 0.0-1.0
-        self.fluorescence = 0.0  # 0.0-1.0 (additional glow effect)
+        self.fluorescence = 0.5  # 0.0-1.0 (additional glow effect)
         
         # Neon halo parameters
         self.halo_width = 0.12   # 0.02 - 0.4 (in normalized radius units)
@@ -42,7 +42,7 @@ class ColorEngine:
         self.target_hue = 0.0
         self.target_saturation = 1.0
         self.target_brightness = 1.0
-        self.target_fluorescence = 0.0
+        self.target_fluorescence = 0.5
         self.target_neon_mode = True
         
         # Animation state
@@ -361,6 +361,42 @@ class ColorEngine:
         
         return (start + diff * t) % 360
     
+    def randomize_color(self, duration: float = 0.5) -> None:
+        """Generate a random visually appealing color with animation.
+        
+        Uses weighted randomization to favor saturated, bright colors
+        that look good as neon effects.
+        
+        Args:
+            duration: Animation duration in seconds
+        """
+        try:
+            # Random hue across the spectrum
+            target_hue = np.random.uniform(0, 360)
+            
+            # Favor higher saturation (0.6-1.0 range)
+            target_saturation = np.random.uniform(0.6, 1.0)
+            
+            # Favor higher brightness (0.7-1.0 range)
+            target_brightness = np.random.uniform(0.7, 1.0)
+            
+            # Random fluorescence with slight bias toward higher values
+            target_fluorescence = np.random.uniform(0.3, 1.0)
+            
+            # Random mode with 70% chance of neon mode
+            target_neon_mode = np.random.random() > 0.3
+            
+            self.animate_to(
+                target_hue=target_hue,
+                target_saturation=target_saturation,
+                target_brightness=target_brightness,
+                target_fluorescence=target_fluorescence,
+                target_neon_mode=target_neon_mode,
+                duration=duration
+            )
+        except Exception as e:
+            print(f"Error in randomize_color: {e}")
+    
     # Preset configurations for different neon styles
     PRESETS = {
         "Classic Neon": {
@@ -419,11 +455,39 @@ class ColorEngine:
             "fluorescence": 0.0,
             "neon_mode": False
         },
-           "Neon Brown": {
-               "hue": 30,   # orange
-               "saturation": 0.7,
-               "brightness": 0.35,   # keep core dark to read as brown
+        "Neon Brown": {
+            "hue": 30,   # Orange-brown
+            "saturation": 0.7,
+            "brightness": 0.35,   # Keep core dark to read as brown
             "fluorescence": 0.9,
+            "neon_mode": True
+        },
+        "Synthwave Sunset": {
+            "hue": 15,   # Deep orange-red
+            "saturation": 0.95,
+            "brightness": 0.9,
+            "fluorescence": 0.75,
+            "neon_mode": True
+        },
+        "Matrix Green": {
+            "hue": 125,  # Classic matrix green
+            "saturation": 1.0,
+            "brightness": 0.8,
+            "fluorescence": 1.0,
+            "neon_mode": True
+        },
+        "Deep Purple": {
+            "hue": 280,  # Rich purple
+            "saturation": 0.9,
+            "brightness": 0.85,
+            "fluorescence": 0.7,
+            "neon_mode": True
+        },
+        "Golden Hour": {
+            "hue": 45,   # Warm gold
+            "saturation": 0.85,
+            "brightness": 0.95,
+            "fluorescence": 0.6,
             "neon_mode": True
         }
     }

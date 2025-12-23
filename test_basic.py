@@ -25,7 +25,7 @@ def test_color_engine_initialization():
     assert engine.hue == 0.0, f"Expected hue=0.0, got {engine.hue}"
     assert engine.saturation == 1.0, f"Expected saturation=1.0, got {engine.saturation}"
     assert engine.brightness == 1.0, f"Expected brightness=1.0, got {engine.brightness}"
-    assert engine.fluorescence == 0.0, f"Expected fluorescence=0.0, got {engine.fluorescence}"
+    assert engine.fluorescence == 0.5, f"Expected fluorescence=0.5, got {engine.fluorescence}"
     assert engine.neon_mode == True, f"Expected neon_mode=True, got {engine.neon_mode}"
     
     print("✓ ColorEngine initialization test passed")
@@ -197,6 +197,50 @@ def test_animation_system():
     print("✓ Animation system test passed")
 
 
+def test_randomize_color():
+    """Test random color generation functionality"""
+    print("Testing randomize_color...")
+    
+    engine = ColorEngine()
+    original_hue = engine.hue
+    
+    # Randomize color
+    engine.randomize_color(duration=0.1)
+    assert engine.is_animating == True, "Animation should be active after randomize"
+    
+    # Wait for animation to complete
+    import time
+    time.sleep(0.15)
+    engine.update_animation()
+    
+    # Values should be within valid ranges
+    assert 0 <= engine.hue <= 360, f"Hue out of range: {engine.hue}"
+    assert 0 <= engine.saturation <= 1, f"Saturation out of range: {engine.saturation}"
+    assert 0 <= engine.brightness <= 1, f"Brightness out of range: {engine.brightness}"
+    assert 0 <= engine.fluorescence <= 1, f"Fluorescence out of range: {engine.fluorescence}"
+    
+    print("✓ Randomize color test passed")
+
+
+def test_new_presets():
+    """Test that new presets are available and work"""
+    print("Testing new presets...")
+    
+    engine = ColorEngine()
+    preset_names = ColorEngine.get_preset_names()
+    
+    # Check new presets exist
+    new_presets = ["Synthwave Sunset", "Matrix Green", "Deep Purple", "Golden Hour"]
+    for preset in new_presets:
+        assert preset in preset_names, f"New preset '{preset}' not found"
+    
+    # Test applying a new preset
+    success = engine.apply_preset("Matrix Green", duration=0.1)
+    assert success == True, "Matrix Green preset should apply successfully"
+    
+    print("✓ New presets test passed")
+
+
 def run_all_tests():
     """Run all tests"""
     print("=" * 50)
@@ -211,6 +255,8 @@ def run_all_tests():
         test_preset_application,
         test_input_validation,
         test_animation_system,
+        test_randomize_color,
+        test_new_presets,
     ]
     
     passed = 0

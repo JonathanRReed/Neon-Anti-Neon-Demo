@@ -1,6 +1,6 @@
 """
-Neon & Anti-Neon Demo
-Main application that integrates all components
+Neon & Anti-Neon Demo - Color Perception Laboratory
+Main application that integrates all components including illusion modules
 """
 
 import numpy as np
@@ -12,6 +12,17 @@ from datetime import datetime
 from PIL import Image
 
 from color_engine import ColorEngine
+from color_management import ColorManagement, srgb_to_linear, linear_to_srgb
+from validation_tools import EyedropperTool, CalibrationChecker
+
+# Import illusion modules
+from modules.neon_brown import NeonBrownModule
+from modules.contrast_illusions import (
+    SimultaneousContrastModule, CheckerShadowModule, 
+    CornsweetModule, NeonSpreadingModule
+)
+from modules.chimerical import ChimericalModule, ChimericalType, CHIMERICAL_PRESETS
+from modules.motion_illusions import LilacChaserModule, BenhamDiskModule
 
 # Constants
 DEFAULT_WINDOW_WIDTH = 1200
@@ -40,6 +51,19 @@ CPU_THROTTLE_SLEEP = 0.001  # Sleep time when running > 200 FPS
 HIGH_FPS_THRESHOLD = 200.0
 LOW_FPS_THRESHOLD = 30.0
 GOOD_FPS_THRESHOLD = 50.0
+
+# Module Constants - Available illusion modules
+AVAILABLE_MODULES = [
+    ("Neon Demo", "neon_demo"),
+    ("Neon Brown", "neon_brown"),
+    ("Simultaneous Contrast", "simultaneous_contrast"),
+    ("Checker Shadow", "checker_shadow"),
+    ("Cornsweet Edge", "cornsweet"),
+    ("Neon Spreading", "neon_spreading"),
+    ("Chimerical Colors", "chimerical"),
+    ("Lilac Chaser", "lilac_chaser"),
+    ("Benham's Disk", "benham_disk"),
+]
 
 # Try to import ModernGL, handle gracefully if not available
 try:
@@ -202,6 +226,9 @@ class ShaderRenderer:
                 program['halo_width'] = float(color_engine.halo_width)
                 program['halo_intensity'] = float(color_engine.halo_intensity)
                 program['bloom_intensity'] = float(color_engine.get_bloom_intensity())
+                # Pass time for pulsing animation
+                if 'time' in program:
+                    program['time'] = float(time.time() % 1000.0)  # Modulo to prevent precision issues
             else:
                 program = self.antineon_program
                 r, g, b = color_engine.get_rgb()
@@ -323,6 +350,13 @@ class NeonApp:
             self._toast_id = None
             self._toast_expire = 0.0
             
+            # Initialize illusion modules
+            self._initialize_illusion_modules()
+            
+            # Current active module
+            self.current_module = "neon_demo"
+            self.show_calibration = False
+            
             # Create user interface
             self._create_ui()
             
@@ -442,8 +476,11 @@ class NeonApp:
             
             # Create texture registry
             with dpg.texture_registry():
-                # Initialize with black texture
-                self.texture_data = np.zeros((self.height, self.width, 4), dtype=np.float32)
+                # Initialize with black texture (DearPyGui expects flattened 1D array)
+                # Create as 3D array then flatten for proper RGBA layout
+                image = np.zeros((self.height, self.width, 4), dtype=np.float32)
+                image[..., 3] = 1.0  # Full alpha
+                self.texture_data = image.flatten()
                 self.texture_id = dpg.add_dynamic_texture(self.width, self.height, self.texture_data)
                 
             print("Rendering state initialized")
@@ -481,6 +518,31 @@ class NeonApp:
         except Exception:
             pass
     
+    def _initialize_illusion_modules(self):
+        """Initialize all illusion modules"""
+        print("Initializing illusion modules...")
+        
+        # Create module instances
+        self.modules = {
+            "neon_brown": NeonBrownModule(),
+            "simultaneous_contrast": SimultaneousContrastModule(),
+            "checker_shadow": CheckerShadowModule(),
+            "cornsweet": CornsweetModule(),
+            "neon_spreading": NeonSpreadingModule(),
+            "chimerical": ChimericalModule(),
+            "lilac_chaser": LilacChaserModule(),
+            "benham_disk": BenhamDiskModule(),
+        }
+        
+        # Initialize validation tools
+        self.eyedropper = EyedropperTool()
+        
+        # Module-specific state
+        self._module_texture_data = None
+        self._module_needs_update = True
+        
+        print(f"Initialized {len(self.modules)} illusion modules")
+    
     def _has_color_state_changed(self) -> bool:
         """Check if the color state has changed since last render"""
         current_state = (
@@ -501,157 +563,214 @@ class NeonApp:
     def _create_ui(self):
         """Create the user interface"""
         # Main window
-        with dpg.window(label="Neon & Anti-Neon Demo", no_close=True, tag="main_window"):
+        with dpg.window(label="Color Perception Laboratory", no_close=True, tag="main_window"):
             dpg.set_primary_window("main_window", True)
+            
+            # Top bar with module selector
+            with dpg.child_window(width=-1, height=45, tag="module_bar"):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("Module:", color=[200, 200, 255])
+                    dpg.add_combo(
+                        items=[name for name, _ in AVAILABLE_MODULES],
+                        default_value="Neon Demo",
+                        callback=self._on_module_change,
+                        width=200,
+                        tag="module_selector"
+                    )
+                    dpg.add_spacer(width=20)
+                    dpg.add_button(
+                        label="Calibration",
+                        callback=self._on_calibration_toggle,
+                        tag="calibration_button"
+                    )
+                    dpg.add_spacer(width=20)
+                    dpg.add_text("", tag="module_info_text", color=[150, 200, 150])
+            
+            dpg.add_spacer(height=5)
             
             # Two-panel layout
             with dpg.group(horizontal=True):
                 # Left panel - Rendering
                 with dpg.child_window(width=RENDER_PANEL_WIDTH, height=DEFAULT_RENDER_HEIGHT, tag="render_panel"):
-                    dpg.add_image(self.texture_id, width=RENDER_PANEL_WIDTH, height=DEFAULT_RENDER_HEIGHT)
+                    dpg.add_image(self.texture_id, width=RENDER_PANEL_WIDTH, height=DEFAULT_RENDER_HEIGHT, tag="render_image")
                 
-                # Right panel - Controls
+                # Right panel - Controls (will be different for each module)
                 with dpg.child_window(width=CONTROL_PANEL_WIDTH, height=DEFAULT_RENDER_HEIGHT, tag="control_panel"):
-                    dpg.add_text("Color Settings", color=[255, 255, 255], tag="hdr_color_settings")
-                    if self.header_font:
-                        dpg.bind_item_font("hdr_color_settings", self.header_font)
-                    dpg.add_separator()
-                    
-                    # Mode toggle
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("Mode:")
-                        dpg.add_radio_button(
-                            items=["Neon", "Anti-Neon"],
-                            default_value="Neon",
-                            callback=self._on_mode_change,
-                            horizontal=True
-                        )
-                    
-                    dpg.add_spacer(height=10)
-                    
-                    # Hue slider
-                    dpg.add_text("Hue")
-                    dpg.add_slider_float(
-                        label="",
-                        default_value=0,
-                        min_value=0,
-                        max_value=360,
-                        callback=self._on_hue_change,
-                        width=SLIDER_WIDTH,
-                        tag="hue_slider"
-                    )
-                    
-                    # Saturation slider
-                    dpg.add_text("Saturation")
-                    dpg.add_slider_float(
-                        label="",
-                        default_value=1.0,
-                        min_value=0.0,
-                        max_value=1.0,
-                        callback=self._on_saturation_change,
-                        width=SLIDER_WIDTH,
-                        tag="saturation_slider"
-                    )
-                    
-                    # Brightness slider
-                    dpg.add_text("Brightness")
-                    dpg.add_slider_float(
-                        label="",
-                        default_value=1.0,
-                        min_value=0.0,
-                        max_value=1.0,
-                        callback=self._on_brightness_change,
-                        width=SLIDER_WIDTH,
-                        tag="brightness_slider"
-                    )
-                    
-                    # Fluorescence slider
-                    dpg.add_text("Fluorescence")
-                    dpg.add_slider_float(
-                        label="",
-                        default_value=0.5,
-                        min_value=0.0,
-                        max_value=1.0,
-                        callback=self._on_fluorescence_change,
-                        width=SLIDER_WIDTH,
-                        tag="fluorescence_slider"
-                    )
-                    
-                    dpg.add_spacer(height=20)
-                    
-                    # Preset buttons
-                    dpg.add_text("Quick Presets", color=[255, 255, 255], tag="hdr_quick_presets")
-                    if self.header_font:
-                        dpg.bind_item_font("hdr_quick_presets", self.header_font)
-                    dpg.add_separator()
-                    
-                    # Halo controls (for neon look and neon-brown)
-                    dpg.add_text("Halo Width")
-                    dpg.add_slider_float(
-                        default_value=self.color_engine.halo_width,
-                        min_value=0.02,
-                        max_value=0.4,
-                        width=SLIDER_WIDTH,
-                        callback=self._on_halo_width_change,
-                        tag="halo_width_slider"
-                    )
-                    dpg.add_text("Halo Intensity")
-                    dpg.add_slider_float(
-                        default_value=self.color_engine.halo_intensity,
-                        min_value=0.0,
-                        max_value=2.0,
-                        width=SLIDER_WIDTH,
-                        callback=self._on_halo_intensity_change,
-                        tag="halo_intensity_slider"
-                    )
-                    
-                    dpg.add_spacer(height=10)
-                    
-                    # Rendering mode toggle
-                    with dpg.group(horizontal=True):
-                        dpg.add_text("Renderer:")
-                        dpg.add_radio_button(
-                            items=["GPU", "CPU"],
-                            default_value="GPU",
-                            callback=self._on_renderer_toggle,
-                            tag="renderer_mode"
-                        )
-                    
-                    dpg.add_spacer(height=10)
-                    
-                    # Create preset buttons in a grid layout
-                    preset_names = ["Classic Neon", "Cool Blue", "Warm Orange", "Electric Green", 
-                                  "Vaporwave Pink", "Cyberpunk Red", "Anti-Neon Cool", "Anti-Neon Warm", "Neon Brown"]
-                    
-                    for i in range(0, len(preset_names), 2):
+                    # Neon Demo controls (shown by default) - ALL controls in one group
+                    with dpg.group(tag="neon_demo_controls"):
+                        dpg.add_text("Color Settings", color=[255, 255, 255], tag="hdr_color_settings")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_color_settings", self.header_font)
+                        dpg.add_separator()
+                        
+                        # Mode toggle
                         with dpg.group(horizontal=True):
-                            for j in range(2):
-                                if i + j < len(preset_names):
-                                    preset_name = preset_names[i + j]
-                                    dpg.add_button(
-                                        label=preset_name,
-                                        width=PRESET_BUTTON_WIDTH,
-                                        callback=lambda s, a, u: self._on_preset_select(u),
-                                        user_data=preset_name,
-                                        tag=f"preset_{preset_name.lower().replace(' ', '_')}"
-                                    )
+                            dpg.add_text("Mode:")
+                            dpg.add_radio_button(
+                                items=["Neon", "Anti-Neon"],
+                                default_value="Neon",
+                                callback=self._on_mode_change,
+                                horizontal=True,
+                                tag="mode_radio"
+                            )
+                        
+                        dpg.add_spacer(height=10)
+                        
+                        # Hue slider
+                        dpg.add_text("Hue")
+                        dpg.add_slider_float(
+                            label="",
+                            default_value=0,
+                            min_value=0,
+                            max_value=360,
+                            callback=self._on_hue_change,
+                            width=SLIDER_WIDTH,
+                            tag="hue_slider"
+                        )
+                        
+                        # Saturation slider
+                        dpg.add_text("Saturation")
+                        dpg.add_slider_float(
+                            label="",
+                            default_value=1.0,
+                            min_value=0.0,
+                            max_value=1.0,
+                            callback=self._on_saturation_change,
+                            width=SLIDER_WIDTH,
+                            tag="saturation_slider"
+                        )
+                        
+                        # Brightness slider
+                        dpg.add_text("Brightness")
+                        dpg.add_slider_float(
+                            label="",
+                            default_value=1.0,
+                            min_value=0.0,
+                            max_value=1.0,
+                            callback=self._on_brightness_change,
+                            width=SLIDER_WIDTH,
+                            tag="brightness_slider"
+                        )
+                        
+                        # Fluorescence slider
+                        dpg.add_text("Fluorescence")
+                        dpg.add_slider_float(
+                            label="",
+                            default_value=0.5,
+                            min_value=0.0,
+                            max_value=1.0,
+                            callback=self._on_fluorescence_change,
+                            width=SLIDER_WIDTH,
+                            tag="fluorescence_slider"
+                        )
+                        
+                        dpg.add_spacer(height=20)
+                        
+                        # Preset buttons
+                        dpg.add_text("Quick Presets", color=[255, 255, 255], tag="hdr_quick_presets")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_quick_presets", self.header_font)
+                        dpg.add_separator()
+                        
+                        # Halo controls (for neon look and neon-brown)
+                        dpg.add_text("Halo Width")
+                        dpg.add_slider_float(
+                            default_value=self.color_engine.halo_width,
+                            min_value=0.02,
+                            max_value=0.4,
+                            width=SLIDER_WIDTH,
+                            callback=self._on_halo_width_change,
+                            tag="halo_width_slider"
+                        )
+                        dpg.add_text("Halo Intensity")
+                        dpg.add_slider_float(
+                            default_value=self.color_engine.halo_intensity,
+                            min_value=0.0,
+                            max_value=2.0,
+                            width=SLIDER_WIDTH,
+                            callback=self._on_halo_intensity_change,
+                            tag="halo_intensity_slider"
+                        )
+                        
+                        dpg.add_spacer(height=10)
+                        
+                        # Rendering mode toggle
+                        with dpg.group(horizontal=True):
+                            dpg.add_text("Renderer:")
+                            dpg.add_radio_button(
+                                items=["GPU", "CPU"],
+                                default_value="GPU",
+                                callback=self._on_renderer_toggle,
+                                tag="renderer_mode"
+                            )
+                        
+                        dpg.add_spacer(height=10)
+                        
+                        # Create preset buttons in a grid layout - now with all 13 presets
+                        preset_names = ColorEngine.get_preset_names()
+                        
+                        # Use 3-column layout for more presets
+                        for i in range(0, len(preset_names), 3):
+                            with dpg.group(horizontal=True):
+                                for j in range(3):
+                                    if i + j < len(preset_names):
+                                        preset_name = preset_names[i + j]
+                                        dpg.add_button(
+                                            label=preset_name,
+                                            width=PRESET_BUTTON_WIDTH,
+                                            callback=lambda s, a, u: self._on_preset_select(u),
+                                            user_data=preset_name,
+                                            tag=f"preset_{preset_name.lower().replace(' ', '_').replace('-', '_')}"
+                                        )
+                        
+                        dpg.add_spacer(height=15)
+                        
+                        # Fun action buttons
+                        dpg.add_text("Actions", color=[255, 255, 255], tag="hdr_actions")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_actions", self.header_font)
+                        dpg.add_separator()
+                        
+                        with dpg.group(horizontal=True):
+                            dpg.add_button(
+                                label="🎲 Random",
+                                width=PRESET_BUTTON_WIDTH,
+                                callback=self._on_random_color,
+                                tag="random_button"
+                            )
+                            dpg.add_button(
+                                label="▶ Demo",
+                                width=PRESET_BUTTON_WIDTH,
+                                callback=self._on_demo_toggle,
+                                tag="demo_button"
+                            )
+                            dpg.add_button(
+                                label="Reset",
+                                width=PRESET_BUTTON_WIDTH,
+                                callback=self._on_reset,
+                                tag="reset_button"
+                            )
+                        
+                        dpg.add_spacer(height=10)
+                        
+                        # Export Button
+                        dpg.add_button(
+                            label="📷 Export Image",
+                            width=SLIDER_WIDTH,
+                            callback=self._on_export_image,
+                            tag="export_button"
+                        )
+                        
+                        dpg.add_spacer(height=10)
+                        
+                        # Keyboard shortcuts help
+                        dpg.add_text("Shortcuts: Space=Mode, R=Reset, ←→=Hue", 
+                                    color=[150, 150, 160], tag="shortcuts_help")
                     
-                    dpg.add_spacer(height=20)
+                    # END of neon_demo_controls group
                     
-                    # Reset Button
-                    dpg.add_button(label="Reset", callback=self._on_reset)
-                    
-                    dpg.add_spacer(height=10)
-                    
-                    # Export Button
-                    dpg.add_button(
-                        label="Export Image",
-                        width=SLIDER_WIDTH,
-                        callback=self._on_export_image,
-                        tag="export_button"
-                    )
-                    
-                    dpg.add_spacer(height=20)
+                    # Module-specific control panels (hidden by default)
+                    self._create_module_controls()
             
             # Bottom info panel across the width
             with dpg.child_window(width=INFO_PANEL_WIDTH, height=INFO_PANEL_HEIGHT, tag="info_panel"):
@@ -664,15 +783,32 @@ class NeonApp:
                         dpg.add_text("FPS: 0", tag="fps_text")
                         dpg.add_text("Renderer: GPU", tag="renderer_text")
                         dpg.add_text("Current Mode: Neon", tag="mode_text")
+                    
+                    dpg.add_spacer(width=40)
+                    
                     with dpg.group():
                         dpg.add_text("Color State", color=[255, 255, 255], tag="hdr_color_state")
                         if self.header_font:
                             dpg.bind_item_font("hdr_color_state", self.header_font)
                         dpg.add_separator()
-                        dpg.add_text("Hue: 0.0", tag="hue_text")
-                        dpg.add_text("Saturation: 1.0", tag="saturation_text")
-                        dpg.add_text("Brightness: 1.0", tag="brightness_text")
-                        dpg.add_text("Fluorescence: 0.5", tag="fluorescence_text")
+                        dpg.add_text("Hue: 0.0°", tag="hue_text")
+                        dpg.add_text("Saturation: 1.00", tag="saturation_text")
+                        dpg.add_text("Brightness: 1.00", tag="brightness_text")
+                        dpg.add_text("Fluorescence: 0.50", tag="fluorescence_text")
+                    
+                    dpg.add_spacer(width=40)
+                    
+                    with dpg.group():
+                        dpg.add_text("Color Values", color=[255, 255, 255], tag="hdr_color_values")
+                        if self.header_font:
+                            dpg.bind_item_font("hdr_color_values", self.header_font)
+                        dpg.add_separator()
+                        dpg.add_text("HEX: #FF0000", tag="hex_text")
+                        dpg.add_text("RGB: 255, 0, 0", tag="rgb_text")
+        
+        # Register keyboard handler
+        with dpg.handler_registry():
+            dpg.add_key_press_handler(callback=self._on_key_press)
     
     def _on_hue_change(self, sender, app_data):
         """Handle hue change"""
@@ -744,13 +880,69 @@ class NeonApp:
             success = self.color_engine.apply_preset(preset_name, duration=1.0)
             if success:
                 print(f"Applied preset: {preset_name}")
-                # Sync UI hints (texts)
-                if dpg.does_item_exist("mode_text"):
-                    dpg.set_value("mode_text", f"Current Mode: {'Neon' if self.color_engine.neon_mode else 'Anti-Neon'}")
+                # Sync UI to reflect target preset values immediately
+                self._sync_ui_with_engine(use_targets=True)
                 self._render_cache_valid = False
             else:
                 print(f"Failed to apply preset: {preset_name}")
                 self._show_toast(f"Failed to apply preset: {preset_name}", 2.0)
+
+    def _sync_ui_with_engine(self, use_targets: bool = False):
+        """Synchronize UI controls and labels with the ColorEngine state.
+        
+        Args:
+            use_targets: If True, use target_* values (useful right after starting an animation),
+                         otherwise use current values.
+        """
+        try:
+            ce = self.color_engine
+            hue = getattr(ce, 'target_hue', ce.hue) if use_targets else ce.hue
+            saturation = getattr(ce, 'target_saturation', ce.saturation) if use_targets else ce.saturation
+            brightness = getattr(ce, 'target_brightness', ce.brightness) if use_targets else ce.brightness
+            fluorescence = getattr(ce, 'target_fluorescence', ce.fluorescence) if use_targets else ce.fluorescence
+            neon_mode = getattr(ce, 'target_neon_mode', ce.neon_mode) if use_targets else ce.neon_mode
+
+            # Update text labels
+            if dpg.does_item_exist("hue_text"):
+                dpg.set_value("hue_text", f"Hue: {hue:.1f}")
+            if dpg.does_item_exist("saturation_text"):
+                dpg.set_value("saturation_text", f"Saturation: {saturation:.2f}")
+            if dpg.does_item_exist("brightness_text"):
+                dpg.set_value("brightness_text", f"Brightness: {brightness:.2f}")
+            if dpg.does_item_exist("fluorescence_text"):
+                dpg.set_value("fluorescence_text", f"Fluorescence: {fluorescence:.2f}")
+            if dpg.does_item_exist("mode_text"):
+                dpg.set_value("mode_text", f"Current Mode: {'Neon' if neon_mode else 'Anti-Neon'}")
+
+            # Update sliders to reflect values
+            if dpg.does_item_exist("hue_slider"):
+                dpg.set_value("hue_slider", float(hue))
+            if dpg.does_item_exist("saturation_slider"):
+                dpg.set_value("saturation_slider", float(saturation))
+            if dpg.does_item_exist("brightness_slider"):
+                dpg.set_value("brightness_slider", float(brightness))
+            if dpg.does_item_exist("fluorescence_slider"):
+                dpg.set_value("fluorescence_slider", float(fluorescence))
+
+            # Halo controls (no presets currently define these; use current values)
+            if dpg.does_item_exist("halo_width_slider"):
+                dpg.set_value("halo_width_slider", float(ce.halo_width))
+            if dpg.does_item_exist("halo_intensity_slider"):
+                dpg.set_value("halo_intensity_slider", float(ce.halo_intensity))
+
+            # Update mode radio selection
+            if dpg.does_item_exist("mode_radio"):
+                dpg.set_value("mode_radio", "Neon" if neon_mode else "Anti-Neon")
+            
+            # Update HEX and RGB color displays
+            hex_color = ce.get_hex_color()
+            r, g, b = ce.get_rgb()
+            if dpg.does_item_exist("hex_text"):
+                dpg.set_value("hex_text", f"HEX: {hex_color.upper()}")
+            if dpg.does_item_exist("rgb_text"):
+                dpg.set_value("rgb_text", f"RGB: {int(r*255)}, {int(g*255)}, {int(b*255)}")
+        except Exception as e:
+            print(f"Failed to sync UI with engine: {e}")
     
     def _on_export_image(self):
         """Export current rendering as PNG image with improved error handling"""
@@ -864,21 +1056,8 @@ class NeonApp:
             self.color_engine.set_fluorescence(0.5)
             self.color_engine.set_neon_mode(True)
         
-        # Reset UI controls (texts and sliders)
-        if dpg.does_item_exist("hue_text"):
-            dpg.set_value("hue_text", "Hue: 0.0")
-        if dpg.does_item_exist("saturation_text"):
-            dpg.set_value("saturation_text", "Saturation: 1.0")
-        if dpg.does_item_exist("brightness_text"):
-            dpg.set_value("brightness_text", "Brightness: 1.0")
-        if dpg.does_item_exist("fluorescence_text"):
-            dpg.set_value("fluorescence_text", "Fluorescence: 0.5")
-        if dpg.does_item_exist("mode_text"):
-            dpg.set_value("mode_text", "Current Mode: Neon")
-        # Sliders
-        for tag, val in [("hue_slider", 0.0), ("saturation_slider", 1.0), ("brightness_slider", 1.0), ("fluorescence_slider", 0.5), ("halo_width_slider", self.color_engine.halo_width), ("halo_intensity_slider", self.color_engine.halo_intensity)]:
-            if dpg.does_item_exist(tag):
-                dpg.set_value(tag, val)
+        # Sync UI to the reset target values immediately
+        self._sync_ui_with_engine(use_targets=True)
         # Renderer toggle back to GPU (will fallback if needed)
         if dpg.does_item_exist("renderer_mode"):
             dpg.set_value("renderer_mode", "GPU")
@@ -888,6 +1067,277 @@ class NeonApp:
         # Invalidate render cache
         self._render_cache_valid = False
     
+    def _on_random_color(self):
+        """Handle random color button"""
+        if hasattr(self.color_engine, 'randomize_color'):
+            self.color_engine.randomize_color(duration=0.5)
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+    
+    def _on_demo_toggle(self):
+        """Handle demo mode toggle button"""
+        if self.color_engine.demo_mode:
+            self.color_engine.stop_demo_mode()
+            if dpg.does_item_exist("demo_button"):
+                dpg.set_item_label("demo_button", "▶ Demo")
+            self._show_toast("Demo mode stopped", 1.5)
+        else:
+            self.color_engine.start_demo_mode()
+            if dpg.does_item_exist("demo_button"):
+                dpg.set_item_label("demo_button", "⏹ Stop")
+            self._show_toast("Demo mode started - cycling through colors!", 2.0)
+        self._render_cache_valid = False
+    
+    def _on_key_press(self, sender, app_data):
+        """Handle keyboard shortcuts"""
+        key = app_data
+        
+        # Space = Toggle Neon/Anti-Neon mode
+        if key == dpg.mvKey_Spacebar:
+            new_mode = not self.color_engine.neon_mode
+            self.color_engine.animate_to(target_neon_mode=new_mode, duration=0.3)
+            if dpg.does_item_exist("mode_radio"):
+                dpg.set_value("mode_radio", "Neon" if new_mode else "Anti-Neon")
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+        
+        # R = Reset
+        elif key == dpg.mvKey_R:
+            self._on_reset()
+        
+        # Left Arrow = Decrease hue
+        elif key == dpg.mvKey_Left:
+            new_hue = (self.color_engine.hue - 15) % 360
+            self.color_engine.animate_to(target_hue=new_hue, duration=0.2)
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+        
+        # Right Arrow = Increase hue
+        elif key == dpg.mvKey_Right:
+            new_hue = (self.color_engine.hue + 15) % 360
+            self.color_engine.animate_to(target_hue=new_hue, duration=0.2)
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+        
+        # Up Arrow = Increase brightness
+        elif key == dpg.mvKey_Up:
+            new_brightness = min(1.0, self.color_engine.brightness + 0.1)
+            self.color_engine.animate_to(target_brightness=new_brightness, duration=0.2)
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+        
+        # Down Arrow = Decrease brightness
+        elif key == dpg.mvKey_Down:
+            new_brightness = max(0.0, self.color_engine.brightness - 0.1)
+            self.color_engine.animate_to(target_brightness=new_brightness, duration=0.2)
+            self._sync_ui_with_engine(use_targets=True)
+            self._render_cache_valid = False
+        
+        # D = Toggle demo mode
+        elif key == dpg.mvKey_D:
+            self._on_demo_toggle()
+        
+        # Number keys 1-9 for presets
+        elif key >= dpg.mvKey_1 and key <= dpg.mvKey_9:
+            preset_index = key - dpg.mvKey_1  # 0-8
+            preset_names = ColorEngine.get_preset_names()
+            if preset_index < len(preset_names):
+                self._on_preset_select(preset_names[preset_index])
+    
+    def _create_module_controls(self):
+        """Create control panels for each illusion module (hidden by default)"""
+        
+        # Generic module controls panel
+        with dpg.group(tag="module_controls", show=False):
+            dpg.add_text("Module Controls", color=[255, 255, 255], tag="hdr_module_controls")
+            if self.header_font:
+                dpg.bind_item_font("hdr_module_controls", self.header_font)
+            dpg.add_separator()
+            
+            # Module description
+            dpg.add_text("", tag="module_description", wrap=SLIDER_WIDTH, color=[180, 180, 200])
+            
+            dpg.add_spacer(height=10)
+            
+            # Pixel proof info
+            dpg.add_text("Pixel Proof", color=[255, 200, 100], tag="hdr_pixel_proof")
+            dpg.add_separator()
+            dpg.add_text("", tag="proof_text", wrap=SLIDER_WIDTH, color=[150, 255, 150])
+            
+            dpg.add_spacer(height=15)
+            
+            # Module-specific sliders (will be populated when module is selected)
+            with dpg.group(tag="module_sliders"):
+                pass
+            
+            dpg.add_spacer(height=15)
+            
+            # Module actions
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    label="🔍 Show Proof",
+                    callback=self._on_show_proof,
+                    tag="show_proof_button",
+                    width=PRESET_BUTTON_WIDTH
+                )
+                dpg.add_button(
+                    label="ℹ️ Explanation",
+                    callback=self._on_show_explanation,
+                    tag="explanation_button",
+                    width=PRESET_BUTTON_WIDTH
+                )
+            
+            dpg.add_spacer(height=10)
+            
+            # Safety warning area (for modules that need it)
+            with dpg.group(tag="safety_warning_group", show=False):
+                dpg.add_text("[!] Safety Notice", color=[255, 200, 100])
+                dpg.add_text("", tag="safety_warning_text", wrap=SLIDER_WIDTH, color=[255, 180, 180])
+            
+            dpg.add_spacer(height=10)
+            
+            # Animation controls (for modules with animation)
+            with dpg.group(tag="animation_controls", show=False):
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        label="▶ Start",
+                        callback=self._on_animation_start,
+                        tag="animation_start_button",
+                        width=PRESET_BUTTON_WIDTH
+                    )
+                    dpg.add_button(
+                        label="⏹ Stop",
+                        callback=self._on_animation_stop,
+                        tag="animation_stop_button",
+                        width=PRESET_BUTTON_WIDTH
+                    )
+    
+    def _on_module_change(self, sender, app_data):
+        """Handle module selection change"""
+        # Find the module key from the display name
+        module_key = "neon_demo"
+        for name, key in AVAILABLE_MODULES:
+            if name == app_data:
+                module_key = key
+                break
+        
+        self.current_module = module_key
+        self._module_needs_update = True
+        
+        # Update UI visibility
+        is_neon_demo = (module_key == "neon_demo")
+        
+        # Show/hide control panels
+        if dpg.does_item_exist("neon_demo_controls"):
+            dpg.configure_item("neon_demo_controls", show=is_neon_demo)
+        if dpg.does_item_exist("module_controls"):
+            dpg.configure_item("module_controls", show=not is_neon_demo)
+        
+        # Update module info
+        if not is_neon_demo and module_key in self.modules:
+            module = self.modules[module_key]
+            
+            # Update description
+            if dpg.does_item_exist("module_description"):
+                dpg.set_value("module_description", module.description)
+            
+            # Update proof text
+            if hasattr(module, 'get_proof_info') and dpg.does_item_exist("proof_text"):
+                dpg.set_value("proof_text", module.get_proof_info())
+            
+            # Update module info text
+            if dpg.does_item_exist("module_info_text"):
+                dpg.set_value("module_info_text", f"{module.name}")
+            
+            # Show safety warning if needed
+            has_warning = hasattr(module, 'has_safety_warning') and module.has_safety_warning
+            if dpg.does_item_exist("safety_warning_group"):
+                dpg.configure_item("safety_warning_group", show=has_warning)
+                if has_warning and hasattr(module, 'get_safety_warning'):
+                    dpg.set_value("safety_warning_text", module.get_safety_warning())
+            
+            # Show animation controls for animated modules
+            has_animation = hasattr(module, 'start') and hasattr(module, 'stop')
+            if dpg.does_item_exist("animation_controls"):
+                dpg.configure_item("animation_controls", show=has_animation)
+        else:
+            if dpg.does_item_exist("module_info_text"):
+                dpg.set_value("module_info_text", "Original Neon Demo")
+        
+        # Force re-render
+        self._render_cache_valid = False
+    
+    def _on_calibration_toggle(self):
+        """Toggle calibration display"""
+        self.show_calibration = not self.show_calibration
+        
+        if self.show_calibration:
+            instructions = CalibrationChecker.get_calibration_instructions()
+            self._show_toast("\n".join(instructions[:8]), 8.0)
+        else:
+            self._show_toast("Calibration closed", 1.0)
+    
+    def _on_show_proof(self):
+        """Show pixel proof for current module"""
+        if self.current_module in self.modules:
+            module = self.modules[self.current_module]
+            if hasattr(module, 'get_proof_info'):
+                proof = module.get_proof_info()
+                self._show_toast(proof, 5.0)
+    
+    def _on_show_explanation(self):
+        """Show scientific explanation for current module"""
+        if self.current_module in self.modules:
+            module = self.modules[self.current_module]
+            if hasattr(module, 'get_explanation'):
+                explanation = module.get_explanation()
+                self._show_toast(explanation[:500] + "...", 8.0)
+            else:
+                self._show_toast(module.description, 4.0)
+    
+    def _on_animation_start(self):
+        """Start animation for current module"""
+        if self.current_module in self.modules:
+            module = self.modules[self.current_module]
+            if hasattr(module, 'start'):
+                module.start()
+                self._module_needs_update = True
+                self._show_toast("Animation started", 1.5)
+    
+    def _on_animation_stop(self):
+        """Stop animation for current module"""
+        if self.current_module in self.modules:
+            module = self.modules[self.current_module]
+            if hasattr(module, 'stop'):
+                module.stop()
+                self._show_toast("Animation stopped", 1.5)
+    
+    def _render_illusion_module(self):
+        """Render the current illusion module to texture"""
+        if self.current_module not in self.modules:
+            return None
+        
+        module = self.modules[self.current_module]
+        
+        try:
+            # Render the module
+            image = module.render(DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT)
+            
+            # Ensure proper format (float32, 0-1 range)
+            if image.dtype != np.float32:
+                image = image.astype(np.float32)
+            
+            # Add alpha channel if needed
+            if image.shape[-1] == 3:
+                alpha = np.ones((*image.shape[:2], 1), dtype=np.float32)
+                image = np.concatenate([image, alpha], axis=-1)
+            
+            return image
+            
+        except Exception as e:
+            print(f"Module render error: {e}")
+            return None
+
     def _calculate_fps(self):
         """Calculate frames per second with improved performance monitoring"""
         current_time = time.time()
@@ -933,9 +1383,15 @@ class NeonApp:
         """Render a frame using GPU shaders if available, else CPU fallback
         
         Optimized to skip rendering when color state hasn't changed and no animations are running.
+        Now supports illusion module rendering.
         """
         try:
-            # Update animations and demo mode
+            # Check if rendering an illusion module
+            if hasattr(self, 'current_module') and self.current_module != "neon_demo":
+                self._render_module_frame()
+                return
+            
+            # Update animations and demo mode (for neon demo)
             if hasattr(self.color_engine, 'update_animation'):
                 self.color_engine.update_animation()
             if hasattr(self.color_engine, 'update_demo'):
@@ -956,15 +1412,18 @@ class NeonApp:
                 self._handle_toast_expiration()
                 return
             
-            # Try GPU rendering if enabled and available
-            if self.use_gpu and self.renderer:
+            # Try GPU rendering if enabled and available with proper initialization
+            gpu_success = False
+            if self.use_gpu and self.renderer and hasattr(self.renderer, 'framebuffer') and self.renderer.framebuffer:
                 try:
-                    self.texture_data = self.renderer.render_frame(self.color_engine)
+                    rendered = self.renderer.render_frame(self.color_engine)
+                    # Flatten for DearPyGui (requires 1D array)
+                    self.texture_data = rendered.flatten()
                     dpg.set_value(self.texture_id, self.texture_data)
                     self._render_cache_valid = True
                     self._last_render_time = current_time
                     self._handle_toast_expiration()
-                    return
+                    gpu_success = True
                     
                 except Exception as e:
                     # Disable GPU after first failure to avoid log spam
@@ -975,20 +1434,62 @@ class NeonApp:
                     
                     self.use_gpu = False
                     self._update_renderer_ui_status("CPU")
+            elif self.use_gpu and not self._gpu_failed_once:
+                # GPU requested but not available - fail quietly once
+                self._gpu_failed_once = True
+                self.use_gpu = False
+                self._update_renderer_ui_status("CPU")
             
-            # CPU fallback rendering
-            self._fallback_render()
-            self._render_cache_valid = True
-            self._last_render_time = current_time
+            # CPU fallback rendering (if GPU didn't succeed)
+            if not gpu_success:
+                self._fallback_render()
+                self._render_cache_valid = True
+                self._last_render_time = current_time
+                self._handle_toast_expiration()
+            
+        except Exception as e:
+            # This should rarely happen now - final safety net
+            if not hasattr(self, '_render_error_count'):
+                self._render_error_count = 0
+            self._render_error_count += 1
+            if self._render_error_count <= 3:
+                print(f"Frame rendering failed: {e}")
+            # Try CPU fallback as last resort
+            try:
+                self._fallback_render()
+            except Exception:
+                pass  # Give up silently
+    
+    def _render_module_frame(self):
+        """Render the current illusion module frame"""
+        try:
+            # Get the rendered image from the module
+            image = self._render_illusion_module()
+            
+            if image is not None:
+                # Flatten to 1D array for DearPyGui texture
+                self.texture_data = image.flatten()
+                dpg.set_value(self.texture_id, self.texture_data)
+                
+                # Update proof info periodically
+                if hasattr(self, '_last_proof_update'):
+                    if time.time() - self._last_proof_update > 1.0:
+                        self._update_module_proof()
+                        self._last_proof_update = time.time()
+                else:
+                    self._last_proof_update = time.time()
+            
             self._handle_toast_expiration()
             
         except Exception as e:
-            print(f"Frame rendering failed: {e}")
-            # Continue with black screen rather than crashing
-            if hasattr(self, 'texture_data') and self.texture_data is not None:
-                self.texture_data.fill(0)
-                dpg.set_value(self.texture_id, self.texture_data)
-                self._render_cache_valid = False
+            print(f"Module frame rendering failed: {e}")
+    
+    def _update_module_proof(self):
+        """Update the proof text for the current module"""
+        if self.current_module in self.modules:
+            module = self.modules[self.current_module]
+            if hasattr(module, 'get_proof_info') and dpg.does_item_exist("proof_text"):
+                dpg.set_value("proof_text", module.get_proof_info())
     
     def _update_renderer_ui_status(self, mode):
         """Update UI to reflect current rendering mode"""
@@ -1045,11 +1546,15 @@ class NeonApp:
             # Apply final intensity and brightness
             final_intensity = intensity * brightness_multiplier
             
-            # Update texture data
-            self.texture_data[..., 0] = r * final_intensity
-            self.texture_data[..., 1] = g * final_intensity  
-            self.texture_data[..., 2] = b * final_intensity
-            self.texture_data[..., 3] = final_intensity  # Alpha channel
+            # Create RGBA image array
+            image = np.zeros((self.height, self.width, 4), dtype=np.float32)
+            image[..., 0] = r * final_intensity
+            image[..., 1] = g * final_intensity  
+            image[..., 2] = b * final_intensity
+            image[..., 3] = np.clip(final_intensity, 0, 1)  # Alpha channel
+            
+            # Flatten for DearPyGui (requires 1D array)
+            self.texture_data = image.flatten()
             
             # Update texture
             dpg.set_value(self.texture_id, self.texture_data)
@@ -1059,17 +1564,19 @@ class NeonApp:
             # Fill with solid color as last resort
             try:
                 r, g, b = self.color_engine.get_rgb()
-                self.texture_data.fill(0)
-                self.texture_data[..., 0] = r * 0.5
-                self.texture_data[..., 1] = g * 0.5
-                self.texture_data[..., 2] = b * 0.5
-                self.texture_data[..., 3] = 0.5
+                # Create simple solid color image
+                image = np.zeros((self.height, self.width, 4), dtype=np.float32)
+                image[..., 0] = r * 0.5
+                image[..., 1] = g * 0.5
+                image[..., 2] = b * 0.5
+                image[..., 3] = 0.5
+                self.texture_data = image.flatten()
                 dpg.set_value(self.texture_id, self.texture_data)
-            except Exception:
-                # Ultimate fallback: black screen
-                if hasattr(self, 'texture_data') and self.texture_data is not None:
-                    self.texture_data.fill(0)
-                    dpg.set_value(self.texture_id, self.texture_data)
+            except Exception as e2:
+                print(f"Ultimate fallback failed: {e2}")
+                # Black screen as last resort
+                self.texture_data = np.zeros(self.height * self.width * 4, dtype=np.float32)
+                dpg.set_value(self.texture_id, self.texture_data)
     
     def run(self):
         """Run the application"""
